@@ -1,2 +1,7 @@
 *.o
 siddump
+
+.ipynb_checkpoints/
+out*
+sidparse
+

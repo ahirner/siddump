@@ -28,9 +28,10 @@
 #define INDIRECTY() (((MEM(LO()) | (MEM((LO() + 1) & 0xff) << 8)) + y) & 0xffff)
 #define INDIRECTZP() (((MEM(LO()) | (MEM((LO() + 1) & 0xff) << 8)) + 0) & 0xffff)
 
-#define WRITE(address)                  \
-{                                       \
-  /* cpuwritemap[(address) >> 6] = 1; */  \
+#define WRITE(address)              \
+{                                   \
+                                    \
+    last_mem_write = address;    \
 }
 
 #define EVALPAGECROSSING(baseaddr, realaddr) ((((baseaddr) ^ (realaddr)) & 0xff00) ? 1 : 0)
@@ -262,6 +263,7 @@ unsigned char flags;
 unsigned char sp;
 unsigned char mem[0x10000];
 unsigned int cpucycles;
+int last_mem_write;
 
 static const int cpucycles_table[] =
 {
@@ -292,6 +294,7 @@ void initcpu(unsigned short newpc, unsigned char newa, unsigned char newx, unsig
   flags = 0;
   sp = 0xff;
   cpucycles = 0;
+  last_mem_write = 0;
 }
 
 int runcpu(void)
