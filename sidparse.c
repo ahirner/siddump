@@ -97,6 +97,8 @@ int main(int argc, char **argv)
   int profiling = 0;
   int csv_output = 0;
   int binary_out = 0;
+  int in_handle = 0;
+
   unsigned loadend;
   unsigned loadpos;
   unsigned loadsize;
@@ -171,6 +173,10 @@ int main(int argc, char **argv)
         case 'B':
         binary_out = 1;
         break;
+
+        case 'I':
+        sscanf(&argv[c][2], "%u", &in_handle);
+        break;
       }
     }
     else
@@ -199,7 +205,8 @@ int main(int argc, char **argv)
            "-z        Include CPU cycles+rastertime (PAL)+rastertime, badline corrected\n"
            "-r        Output table in a command-separated values file (.csv)\n"
            "-------------        \n"
-           "-b        Print binary values only\n");
+           "-b        Output binary\n"
+           "-i        Input from file handle (> 3) instead filename");
     return 1;
   }
 
@@ -228,22 +235,33 @@ int main(int argc, char **argv)
   // Check other parameters for correctness
   if ((lowres) && (!spacing)) lowres = 0;
   if (firstframe >= terminalframe){
-    fprintf(stderr, "Terminal frame must be higher than first frame.\n");
+    fprintf(stderr, "Error: Terminal frame must be higher than first frame.\n");
     return 1;
   }
 
   // Open SID file
-  if (!sidname)
+  if ((!sidname) && (!in_handle))
   {
-    fprintf(stderr, "Error: no SID file specified.\n");
+    fprintf(stderr, "Error: No SID input file.\n");
     return 1;
   }
-
-  in = fopen(sidname, "rb");
-  if (!in)
+  else if (in_handle)
   {
-    fprintf(stderr, "Error: couldn't open SID file.\n");
-    return 1;
+    in = fdopen(in_handle, "rb");
+    if (!in)
+    {
+      fprintf(stderr, "Error: couldn't open handle %d.\n", in_handle);
+      return 1;
+    }
+  }
+  else
+  {
+    in = fopen(sidname, "rb");
+    if (!in)
+    {
+      fprintf(stderr, "Error: couldn't open SID file.\n");
+      return 1;
+    }
   }
 
   // Read interesting parts of the SID header
@@ -360,9 +378,8 @@ int main(int argc, char **argv)
         }
         
         fprintf(stderr, "Cycle counter overflow prevented at delta cpu cycle %04x\n", delta_cpu_c);
-
-        delta_instr = 0;
-        last_cpu_cycle = cpucycle;
+        last_cpu_cycle = cpucycles;
+        delta_cpu_c = 0;
       }
 
       // SID register write dumps
@@ -375,21 +392,20 @@ int main(int argc, char **argv)
         unsigned int out = delta_m | reg << 8 | v;
        
         if (binary_out) write(1, &out, 4);
-        else printf("cpucycle: %d       delta cpu:%d | %f\n", cpucycles, delta_cpu_c, (float)delta_instr/(float)delta_cpu_c);
-        // Here we could hook up sound synthesis
+        else printf("cpucycle: %d       delta cpu:%d\n", cpucycles, delta_cpu_c);
 
         //reset mem_write
-        last_cpu_cycle = cpucycle;
+        last_cpu_cycle = cpucycles;
         last_mem_write = 0;
+        delta_cpu_c = 0;
       }
 
-      //printf("Init: %d\n", initializing);
       // Test for jump into Kernal interrupt handler exit
+      // Todo, should initializing also respect these exits?
       if ((initializing == 0) && ((mem[0x01] & 0x07) != 0x5 && (pc == 0xea31 || pc == 0xea81)))
         break;
 
       // Test for artificial frame so that FPS are maintained
-      // Bit 2 is to indicate this <-- not now b/c used up by frames
       if ((cpucycles - irregular_frame_out_cycle) >= CYCLE_SCREEN_REFRESH)
       {
         // Frame out because no other suspend function
@@ -401,15 +417,15 @@ int main(int argc, char **argv)
         }
         else
         {
-          printf("%04x, FRAME %04x, irregular, initializing %d \n", instr, frames, initializing);
+          printf("%04x, FRAME %04x, irregular, init%d \n", instr, frames, initializing);
         }
-        // do not re-init cpu nor break but wat for hard stop
+        // do not re-init cpu nor break but wait for hard stop
         frames++;
         irregular_frame_out_cycle = cpucycles;
       }
     }
 
-    // Regular interrupt Frame out
+    // Regular Frame out (interrupt or cpu suspended)
     if (binary_out)
     {
       int delta_cpu_c = cpucycles - last_cpu_cycle;
@@ -419,12 +435,13 @@ int main(int argc, char **argv)
     }
     else
     {
-      printf("%04x, FRAME %04x, initializing %d \n", instr, frames, initializing);
+      printf("%04x, FRAME %04x, init %d \n", instr, frames, initializing);
     }
 
     // Advance state for re-entry
     initializing = 0;
-    // init cpu normally
+
+    // Init cpu normally with
     // Playroutine
     initcpu(playaddress, 0, 0, 0);
     frames++;
