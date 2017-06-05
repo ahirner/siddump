@@ -429,7 +429,7 @@ int main(int argc, char **argv)
         }
         // do not re-init cpu nor break but wat for hard stop
         frames++;
-        break;
+        //break;
       }
     }
 
