@@ -376,8 +376,7 @@ int main(int argc, char **argv)
           unsigned int out = delta_m | 25 << 8;
           write(1, &out, 4);
         }
-        
-        fprintf(stderr, "Cycle counter overflow prevented at delta cpu cycle %04x\n", delta_cpu_c);
+        else fprintf(stdout, "%06x: Cycle counter overflow prevented at delta:%04x\n", instr, delta_cpu_c);
         last_cpu_cycle = cpucycles;
         delta_cpu_c = 0;
       }
@@ -392,12 +391,13 @@ int main(int argc, char **argv)
         unsigned int out = delta_m | reg << 8 | v;
        
         if (binary_out) write(1, &out, 4);
-        else printf("cpucycle: %d       delta cpu:%d\n", cpucycles, delta_cpu_c);
+        else fprintf(stdout, "%06x: INSTR %04x, cycle delta:%04x\n", instr, reg << 8 | v, delta_cpu_c);
 
-        //reset mem_write
         last_cpu_cycle = cpucycles;
-        last_mem_write = 0;
         delta_cpu_c = 0;
+
+        //reset mem_write so that if next instructions don't write to mem, nothing is emitted more than once
+        last_mem_write = 0;
       }
 
       // Test for jump into Kernal interrupt handler exit
@@ -415,36 +415,35 @@ int main(int argc, char **argv)
           unsigned int out = 1 << 31 | delta_m | (frames & 0xFFFF); //| initializing | (1 << 1);
           write(1, &out, 4);
         }
-        else
-        {
-          printf("%04x, FRAME %04x, irregular, init%d \n", instr, frames, initializing);
-        }
+        else fprintf(stdout, "%06x, FRAME %04x, cycle delta:%04x, init=%d [irregular]\n", instr, frames, delta_cpu_c, initializing);
         // do not re-init cpu nor break but wait for hard stop
         frames++;
         irregular_frame_out_cycle = cpucycles;
       }
     }
 
-    // Regular Frame out (interrupt or cpu suspended)
-    if (binary_out)
-    {
+  {
+      // Regular Frame out (interrupt or cpu suspended)
       int delta_cpu_c = cpucycles - last_cpu_cycle;
-      unsigned int delta_m = (delta_cpu_c & CYCLE_COUNTERTER_MAX) << 16;
-      unsigned int out = 1 << 31 | delta_m | (frames & 0xFFFF); //| initializing;
-      write(1, &out, 4);
-    }
-    else
-    {
-      printf("%04x, FRAME %04x, init %d \n", instr, frames, initializing);
-    }
+      if (binary_out)
+      {
+        unsigned int delta_m = (delta_cpu_c & CYCLE_COUNTERTER_MAX) << 16;
+        unsigned int out = 1 << 31 | delta_m | (frames & 0xFFFF); //| initializing;
+        write(1, &out, 4);
+      }
+      else
+      {
+        printf("%06x, FRAME %04x, cycle delta:%04x, init=%d\n", instr, frames, delta_cpu_c, initializing);
+      }
 
-    // Advance state for re-entry
-    initializing = 0;
+  }
 
-    // Init cpu normally with
-    // Playroutine
-    initcpu(playaddress, 0, 0, 0);
-    frames++;
+  // Advance state for re-entry
+  initializing = 0;
+  // Init cpu normally with
+  // Playroutine
+  initcpu(playaddress, 0, 0, 0);
+  frames++;
 
   }
   while (frames < terminalframe);
