@@ -334,9 +334,7 @@ int main(int argc, char **argv)
 
     // Inner cycle data
     int instr = 0;
-    int last_write_instr = 0;
     int last_cpu_cycle = cpucycles = 0;
-
     int irregular_frame_out_cycle = 0;
 
     while (runcpu())
@@ -348,7 +346,6 @@ int main(int argc, char **argv)
         return 1;
       }
 
-      int delta_instr = instr - last_write_instr;
       int delta_cpu_c = cpucycles - last_cpu_cycle;
 
       // Emit NOP so that cycle counter overflow is prevented
@@ -364,10 +361,8 @@ int main(int argc, char **argv)
         
         fprintf(stderr, "Cycle counter overflow prevented at delta cpu cycle %04x\n", delta_cpu_c);
 
-        delta_cpu_c = 0;
         delta_instr = 0;
-        last_write_instr = instr;
-        last_cpu_cycle = cpucycles;
+        last_cpu_cycle = cpucycle;
       }
 
       // SID register write dumps
@@ -381,21 +376,17 @@ int main(int argc, char **argv)
        
         if (binary_out) write(1, &out, 4);
         else printf("cpucycle: %d       delta cpu:%d | %f\n", cpucycles, delta_cpu_c, (float)delta_instr/(float)delta_cpu_c);
-
-        last_write_instr = instr;
-        last_cpu_cycle = cpucycles;
         // Here we could hook up sound synthesis
 
         //reset mem_write
+        last_cpu_cycle = cpucycle;
         last_mem_write = 0;
       }
 
       //printf("Init: %d\n", initializing);
       // Test for jump into Kernal interrupt handler exit
       if ((initializing == 0) && ((mem[0x01] & 0x07) != 0x5 && (pc == 0xea31 || pc == 0xea81)))
-      {
         break;
-      }
 
       // Test for artificial frame so that FPS are maintained
       // Bit 2 is to indicate this <-- not now b/c used up by frames
@@ -414,10 +405,6 @@ int main(int argc, char **argv)
         }
         // do not re-init cpu nor break but wat for hard stop
         frames++;
-        //break;
-        last_write_instr = instr;
-        last_cpu_cycle = cpucycles;
-
         irregular_frame_out_cycle = cpucycles;
       }
     }
