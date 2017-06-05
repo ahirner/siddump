@@ -310,22 +310,16 @@ int main(int argc, char **argv)
 
 
   // Data collection & display loop
-  // shift initialization there to also catch memwrites of Robocop.sid et al.?
-
   int initializing = 1;
-
   do
   {
-    // Inner cycle data
-    int instr = 0;
-    int last_write_instr = 0;
-    int last_cpu_cycle = cpucycles = 0;
 
     if (initializing) {
         // Print info & run initroutine
         fprintf(stderr, "Load address: $%04X Init address: $%04X Play address: $%04X\n", loadaddress, initaddress, playaddress);
         fprintf(stderr, "Calling initroutine with subtune %d\n", subtune);
         mem[0x01] = 0x37;
+        initcpu(initaddress, subtune, 0, 0);
 
         if (playaddress == 0)
         {
@@ -336,8 +330,14 @@ int main(int argc, char **argv)
             playaddress = mem[0x314] | (mem[0x315] << 8);
           fprintf(stderr, "New play address is $%04X\n", playaddress);
         }
-        initcpu(initaddress, subtune, 0, 0);
     }
+
+    // Inner cycle data
+    int instr = 0;
+    int last_write_instr = 0;
+    int last_cpu_cycle = cpucycles = 0;
+
+    int irregular_frame_out_cycle = 0;
 
     while (runcpu())
     {
@@ -380,7 +380,7 @@ int main(int argc, char **argv)
         unsigned int out = delta_m | reg << 8 | v;
        
         if (binary_out) write(1, &out, 4);
-        //else printf("cpucycle: %d       delta cpu:%d | %f\n", cpucycles, delta_cpu_c, (float)delta_instr/(float)delta_cpu_c);
+        else printf("cpucycle: %d       delta cpu:%d | %f\n", cpucycles, delta_cpu_c, (float)delta_instr/(float)delta_cpu_c);
 
         last_write_instr = instr;
         last_cpu_cycle = cpucycles;
@@ -390,31 +390,16 @@ int main(int argc, char **argv)
         last_mem_write = 0;
       }
 
+      //printf("Init: %d\n", initializing);
       // Test for jump into Kernal interrupt handler exit
-      if ((mem[0x01] & 0x07) != 0x5 && (pc == 0xea31 || pc == 0xea81))
+      if ((initializing == 0) && ((mem[0x01] & 0x07) != 0x5 && (pc == 0xea31 || pc == 0xea81)))
       {
-        // Regular interrupt Frame out
-        if (binary_out)
-        {
-          unsigned int delta_m = (delta_cpu_c & CYCLE_COUNTERTER_MAX) << 16;
-          unsigned int out = 1 << 31 | delta_m | (frames & 0xFFFF); //| initializing;
-          write(1, &out, 4);
-        }
-        else
-        {
-          printf("%04x, FRAME %04x, initializing %d \n", instr, frames, initializing);
-        }
-
-        // init cpu normally 
-        // Playroutine
-        initcpu(playaddress, 0, 0, 0);
-        frames++;
         break;
       }
 
       // Test for artificial frame so that FPS are maintained
       // Bit 2 is to indicate this <-- not now b/c used up by frames
-      if (cpucycles >= CYCLE_SCREEN_REFRESH)
+      if ((cpucycles - irregular_frame_out_cycle) >= CYCLE_SCREEN_REFRESH)
       {
         // Frame out because no other suspend function
         if (binary_out)
@@ -430,12 +415,33 @@ int main(int argc, char **argv)
         // do not re-init cpu nor break but wat for hard stop
         frames++;
         //break;
-        last_cpu_cycle = cpucycles = 0;
+        last_write_instr = instr;
+        last_cpu_cycle = cpucycles;
+
+        irregular_frame_out_cycle = cpucycles;
       }
+    }
+
+    // Regular interrupt Frame out
+    if (binary_out)
+    {
+      int delta_cpu_c = cpucycles - last_cpu_cycle;
+      unsigned int delta_m = (delta_cpu_c & CYCLE_COUNTERTER_MAX) << 16;
+      unsigned int out = 1 << 31 | delta_m | (frames & 0xFFFF); //| initializing;
+      write(1, &out, 4);
+    }
+    else
+    {
+      printf("%04x, FRAME %04x, initializing %d \n", instr, frames, initializing);
     }
 
     // Advance state for re-entry
     initializing = 0;
+    // init cpu normally
+    // Playroutine
+    initcpu(playaddress, 0, 0, 0);
+    frames++;
+
   }
   while (frames < terminalframe);
   
