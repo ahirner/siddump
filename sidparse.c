@@ -7,6 +7,13 @@
 #include "cpu.h"
 
 #define MAX_INSTR 0x1000000 //1 << 18
+#define CPU_FREQ 985248
+#define SCREEN_REFRESH 50
+
+#define CYCLE_COUNTERTER_MAX 0x1FFF
+#define CYCLE_OVERFLOW_MARGIN 10
+#define CYCLE_COUNTER_JITTER 1 // in future we might reduce resolution
+#define CYCLE_SCREEN_REFRESH  (CPU_FREQ / SCREEN_REFRESH)
 
 typedef struct
 {
@@ -75,7 +82,6 @@ int main(int argc, char **argv)
 {
   int subtune = 0;
   int terminalframe = 60*50;
-  int instr = 0;
   int frames = 0;
   int spacing = 0;
   int pattspacing = 0;
@@ -265,31 +271,6 @@ int main(int argc, char **argv)
   fread(&mem[loadaddress], loadsize, 1, in);
   fclose(in);
 
-  // Print info & run initroutine
-  fprintf(stderr, "Load address: $%04X Init address: $%04X Play address: $%04X\n", loadaddress, initaddress, playaddress);
-  fprintf(stderr, "Calling initroutine with subtune %d\n", subtune);
-  mem[0x01] = 0x37;
-  initcpu(initaddress, subtune, 0, 0);
-  instr = 0;
-  while (runcpu())
-  {
-    instr++;
-    if (instr > MAX_INSTR)
-    {
-      fprintf(stderr, "Warning: CPU executed a high number of instructions in init, breaking\n");
-      break;
-    }
-  }
-
-  if (playaddress == 0)
-  {
-    fprintf(stderr, "Warning: SID has play address 0, reading from interrupt vector instead\n");
-    if ((mem[0x01] & 0x07) == 0x5)
-      playaddress = mem[0xfffe] | (mem[0xffff] << 8);
-    else
-      playaddress = mem[0x314] | (mem[0x315] << 8);
-    fprintf(stderr, "New play address is $%04X\n", playaddress);
-  }
 
   // Clear channelstructures in preparation & print first time info
   memset(&chn, 0, sizeof chn);
@@ -297,7 +278,7 @@ int main(int argc, char **argv)
   memset(&prevchn, 0, sizeof prevchn);
   memset(&prevchn2, 0, sizeof prevchn2);
   memset(&prevfilt, 0, sizeof prevfilt);
-  fprintf(stderr, "Calling playroutine until frame %d, starting from frame %d\n", terminalframe, firstframe);
+  fprintf(stderr, "Calling playroutine until frame %d, starting output from frame %d\n", terminalframe, firstframe);
   fprintf(stderr, "Middle C frequency is $%04X\n\n", freqtbllo[48] | (freqtblhi[48] << 8));
 
   if (binary_out == 0) {
@@ -327,11 +308,37 @@ int main(int argc, char **argv)
     }
   }
 
-  // Idle cycles, not DRY..
-  while (frames < firstframe)
+
+  // Data collection & display loop
+  // shift initialization there to also catch memwrites of Robocop.sid et al.?
+
+  int initializing = 1;
+
+  do
   {
-    instr = 0;
-    initcpu(playaddress, 0, 0, 0);
+    // Inner cycle data
+    int instr = 0;
+    int last_write_instr = 0;
+    int last_cpu_cycle = cpucycles = 0;
+
+    if (initializing) {
+        // Print info & run initroutine
+        fprintf(stderr, "Load address: $%04X Init address: $%04X Play address: $%04X\n", loadaddress, initaddress, playaddress);
+        fprintf(stderr, "Calling initroutine with subtune %d\n", subtune);
+        mem[0x01] = 0x37;
+
+        if (playaddress == 0)
+        {
+          fprintf(stderr, "Warning: SID has play address 0, reading from interrupt vector instead\n");
+          if ((mem[0x01] & 0x07) == 0x5)
+            playaddress = mem[0xfffe] | (mem[0xffff] << 8);
+          else
+            playaddress = mem[0x314] | (mem[0x315] << 8);
+          fprintf(stderr, "New play address is $%04X\n", playaddress);
+        }
+        initcpu(initaddress, subtune, 0, 0);
+    }
+
     while (runcpu())
     {
       instr++;
@@ -340,67 +347,162 @@ int main(int argc, char **argv)
         fprintf(stderr, "Error: CPU executed abnormally high amount of instructions in playroutine, exiting\n");
         return 1;
       }
-      if ((mem[0x01] & 0x07) != 0x5 && (pc == 0xea31 || pc == 0xea81))
-        break;
-    }
-    frames++;
-  } 
 
-  // Data collection & display loop
-  bool init = True;
-  do
-  {
+      int delta_instr = instr - last_write_instr;
+      int delta_cpu_c = cpucycles - last_cpu_cycle;
 
-    // Inner cycle data
-
-
-    // Playroutine
-    instr = 0;
-    initcpu(playaddress, 0, 0, 0);
-    int last_write_instr = 0;
-    int last_cpu_cycle = cpucycles = 0;
-    while (runcpu())
-    {
-      instr++;
-      if (instr > MAX_INSTR)
+      // Emit NOP so that cycle counter overflow is prevented
+      // "Register" 25
+      if ((delta_cpu_c - CYCLE_OVERFLOW_MARGIN) >= CYCLE_COUNTERTER_MAX)
       {
-        fprintf(stderr, "Error: CPU executed abnormally high amount of instructions in playroutine, exiting\n");
-        return 1;
+        if (binary_out)
+        {
+          unsigned int delta_m = (delta_cpu_c & CYCLE_COUNTERTER_MAX) << 16;
+          unsigned int out = delta_m | 25 << 8;
+          write(1, &out, 4);
+        }
+        
+        fprintf(stderr, "Cycle counter overflow prevented at delta cpu cycle %04x\n", delta_cpu_c);
+
+        delta_cpu_c = 0;
+        delta_instr = 0;
+        last_write_instr = instr;
+        last_cpu_cycle = cpucycles;
       }
 
       // SID register write dumps
       int reg = last_mem_write - 0xd400;
       if ((reg >= 0) && (reg < 25))
       {
-        unsigned int delta_instr = instr - last_write_instr;
-        unsigned int delta_cpu_c = cpucycles - last_cpu_cycle;
         unsigned char v = mem[last_mem_write];
 
-        //fprintf(stderr, "delta instr: %d       delta cpu:%d | %f\n", delta_instr, delta_cpu_c, (float)delta_instr/(float)delta_cpu_c);
-        //18 bit limit imposed already in MAX_INSTR
-        //but delta encoding hopefully stays under 0x1FFF
+        unsigned int delta_m = ((unsigned)delta_cpu_c & CYCLE_COUNTERTER_MAX) << 16;
+        unsigned int out = delta_m | reg << 8 | v;
+       
+        if (binary_out) write(1, &out, 4);
+        //else printf("cpucycle: %d       delta cpu:%d | %f\n", cpucycles, delta_cpu_c, (float)delta_instr/(float)delta_cpu_c);
 
-        if (binary_out) {
-          if (delta_cpu_c >= 0x1FFF) fprintf(stderr, "Cycle counter overflow.\n");
-
-          unsigned int instr_delta_m = ((unsigned) delta_cpu_c & 0x1FFF) << (8 + 8);
-          unsigned int out = instr_delta_m | reg << 8 | v;
-          write(1, &out, 4);
-        }
-        else {
-          printf("%04x, %04x\n", delta_instr, reg << 8 | v);
-        }
         last_write_instr = instr;
         last_cpu_cycle = cpucycles;
-        // Here we can hook up sound synthesis
+        // Here we could hook up sound synthesis
 
+        //reset mem_write
+        last_mem_write = 0;
       }
+
+      // Test for jump into Kernal interrupt handler exit
+      if ((mem[0x01] & 0x07) != 0x5 && (pc == 0xea31 || pc == 0xea81))
+      {
+        // Regular interrupt Frame out
+        if (binary_out)
+        {
+          unsigned int delta_m = (delta_cpu_c & CYCLE_COUNTERTER_MAX) << 16;
+          unsigned int out = 1 << 31 | delta_m | (frames & 0xFFFF); //| initializing;
+          write(1, &out, 4);
+        }
+        else
+        {
+          printf("%04x, FRAME %04x, initializing %d \n", instr, frames, initializing);
+        }
+
+        // init cpu normally 
+        // Playroutine
+        initcpu(playaddress, 0, 0, 0);
+        frames++;
+        break;
+      }
+
+      // Test for artificial frame so that FPS are maintained
+      // Bit 2 is to indicate this <-- not now b/c used up by frames
+      if (cpucycles >= CYCLE_SCREEN_REFRESH)
+      {
+        // Frame out because no other suspend function
+        if (binary_out)
+        {
+          unsigned int delta_m = (delta_cpu_c & CYCLE_COUNTERTER_MAX) << 16;
+          unsigned int out = 1 << 31 | delta_m | (frames & 0xFFFF); //| initializing | (1 << 1);
+          write(1, &out, 4);
+        }
+        else
+        {
+          printf("%04x, FRAME %04x, irregular, initializing %d \n", instr, frames, initializing);
+        }
+        // do not re-init cpu nor break but wat for hard stop
+        frames++;
+        break;
+      }
+    }
+
+    // Advance state for re-entry
+    initializing = 0;
+
+    /*
+    while (runcpu())
+    {
+      instr++;
+      if (instr > MAX_INSTR)
+      {
+        fprintf(stderr, "Error: CPU executed abnormally high amount of instructions in playroutine, exiting\n");
+        return 1;
+      }
+
+      int delta_instr = instr - last_write_instr;
+      int delta_cpu_c = cpucycles - last_cpu_cycle;
+
+      // Emit NOP so that cycle counter overflow is prevented
+      // "Register" 25
+      if ((delta_cpu_c - CYCLE_OVERFLOW_MARGIN) >= CYCLE_COUNTERTER_MAX)
+      {  
+        if (binary_out) {
+          unsigned int delta_m = (delta_cpu_c & CYCLE_COUNTERTER_MAX) << 16;
+          unsigned int out = delta_m | 25 << 8;
+          write(1, &out, 4);
+        }
+        else fprintf(stderr, "Cycle counter overflow prevented at delta cpu cycle %04x\n", delta_cpu_c);
+
+        delta_cpu_c = 0;
+        delta_instr = 0;
+        last_write_instr = instr;
+        last_cpu_cycle = cpucycles;
+      }
+      
+      {
+        // SID register write dumps
+        int reg = last_mem_write - 0xd400;
+        if ((reg >= 0) && (reg < 25))
+        {
+          unsigned char v = mem[last_mem_write];
+
+          //fprintf(stderr, "delta instr: %d       delta cpu:%d | %f\n", delta_instr, delta_cpu_c, (float)delta_instr/(float)delta_cpu_c);
+          
+          if (binary_out) {
+            if (delta_cpu_c >= CYCLE_COUNTERTER_MAX) fprintf(stderr, "Cycle counter overflow.\n");
+
+            unsigned int delta_m = ((unsigned)delta_cpu_c & CYCLE_COUNTERTER_MAX) << 16;
+            unsigned int out = delta_m | reg << 8 | v;
+            write(1, &out, 4);
+          }
+          else {
+            //fprintf(stderr, "%04x, %04x\n", delta_instr, reg << 8 | v);
+          }
+          last_write_instr = instr;
+          last_cpu_cycle = cpucycles;
+          // Here we could hook up sound synthesis
+
+        }
       //reset mem_write
       last_mem_write = 0;
+
+      }
 
       // Test for jump into Kernal interrupt handler exit
       if ((mem[0x01] & 0x07) != 0x5 && (pc == 0xea31 || pc == 0xea81))
           break;
+      // Test for artificial frame so that FPS are maintained
+      if (cpucycles >= CYCLE_SCREEN_REFRESH)
+      {
+
+      }
     }
 
     // Frame out
@@ -408,18 +510,30 @@ int main(int argc, char **argv)
     unsigned int delta_cpu_c = cpucycles - last_cpu_cycle;
     if (binary_out)
     {
-      if (delta_cpu_c >= 0x1FFF)
-        fprintf(stderr, "Cycle counter overflow.\n");
-
-      unsigned int instr_delta_m = (delta_cpu_c & 0x1FFF) << (8 + 8);
-      unsigned int out = 1 << 31 | instr_delta_m | (frames & 0xFFFF);
+      unsigned int delta_m = (delta_cpu_c & CYCLE_COUNTERTER_MAX) << 16;
+      unsigned int out = 1 << 31 | delta_m | (frames & 0xFFFF) | initializing;
       write(1, &out, 4);
     }
     else
     {
-      printf("%04x, FRAME %04x\n", instr, frames);
+      printf("%04x, FRAME %04x, initializing %d \n", instr, frames, initializing);
     }
 
+    if (initializing)
+    {
+      if (playaddress == 0)
+      {
+        fprintf(stderr, "Warning: SID has play address 0, reading from interrupt vector instead\n");
+        if ((mem[0x01] & 0x07) == 0x5)
+          playaddress = mem[0xfffe] | (mem[0xffff] << 8);
+        else
+          playaddress = mem[0x314] | (mem[0x315] << 8);
+        fprintf(stderr, "New play address is $%04X\n", playaddress);
+      }
+
+      initializing = 0;
+    }
+*/
     // Frame data    
     int c;
     // Get SID parameters from each channel and the filter
@@ -745,8 +859,6 @@ int main(int argc, char **argv)
       }
     }
 
-    // Advance to next frame
-    frames++;
   }
   while (frames < terminalframe);
   
