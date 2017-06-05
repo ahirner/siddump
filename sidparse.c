@@ -289,7 +289,16 @@ int main(int argc, char **argv)
   fread(&mem[loadaddress], loadsize, 1, in);
   fclose(in);
 
-
+  if (playaddress == 0)
+  {
+    fprintf(stderr, "Warning: SID has play address 0, reading from interrupt vector instead\n");
+    if ((mem[0x01] & 0x07) == 0x5)
+      playaddress = mem[0xfffe] | (mem[0xffff] << 8);
+    else
+      playaddress = mem[0x314] | (mem[0x315] << 8);
+    fprintf(stderr, "New play address is $%04X\n", playaddress);
+  }
+  
   // Clear channelstructures in preparation & print first time info
   memset(&chn, 0, sizeof chn);
   memset(&filt, 0, sizeof filt);
@@ -327,6 +336,7 @@ int main(int argc, char **argv)
   }
 
 
+
   // Data collection & display loop
   int initializing = 1;
   do
@@ -338,16 +348,6 @@ int main(int argc, char **argv)
         fprintf(stderr, "Calling initroutine with subtune %d\n", subtune);
         mem[0x01] = 0x37;
         initcpu(initaddress, subtune, 0, 0);
-
-        if (playaddress == 0)
-        {
-          fprintf(stderr, "Warning: SID has play address 0, reading from interrupt vector instead\n");
-          if ((mem[0x01] & 0x07) == 0x5)
-            playaddress = mem[0xfffe] | (mem[0xffff] << 8);
-          else
-            playaddress = mem[0x314] | (mem[0x315] << 8);
-          fprintf(stderr, "New play address is $%04X\n", playaddress);
-        }
     }
 
     // Inner cycle data
@@ -358,11 +358,6 @@ int main(int argc, char **argv)
     while (runcpu())
     {
       instr++;
-      if (instr > MAX_INSTR)
-      {
-        fprintf(stderr, "Error: CPU executed abnormally high amount of instructions, exiting\n");
-        return 1;
-      }
 
       int delta_cpu_c = cpucycles - last_cpu_cycle;
 
@@ -377,6 +372,8 @@ int main(int argc, char **argv)
           write(1, &out, 4);
         }
         else fprintf(stdout, "%06x: Cycle counter overflow prevented at delta:%04x\n", instr, delta_cpu_c);
+        fprintf(stderr, "%06x: Warning: Cycle counter overflow prevented at delta:%04x\n", instr, delta_cpu_c);
+
         last_cpu_cycle = cpucycles;
         delta_cpu_c = 0;
       }
@@ -418,7 +415,18 @@ int main(int argc, char **argv)
         else fprintf(stdout, "%06x, FRAME %04x, cycle delta:%04x, init=%d [irregular]\n", instr, frames, delta_cpu_c, initializing);
         // do not re-init cpu nor break but wait for hard stop
         frames++;
+        
+        if (frames >= terminalframe){
+          fprintf(stderr, "Warning: Terminal frame reached after irregular FRAME emit, exiting\n");
+          return 1;
+        }
         irregular_frame_out_cycle = cpucycles;
+      }
+      // Test for hard stop
+      if (instr > MAX_INSTR)
+      {
+        fprintf(stderr, "Error: CPU executed abnormally high amount of instructions, exiting\n");
+        return 1;
       }
     }
 
@@ -435,6 +443,7 @@ int main(int argc, char **argv)
       {
         printf("%06x, FRAME %04x, cycle delta:%04x, init=%d\n", instr, frames, delta_cpu_c, initializing);
       }
+
 
   }
 
