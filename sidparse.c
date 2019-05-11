@@ -204,8 +204,8 @@ int main(int argc, char **argv)
            "-t<value> Terminal frame, default 60*50\n"
            "-z        Include CPU cycles+rastertime (PAL)+rastertime, badline corrected\n"
            "-r        Output table in a command-separated values file (.csv)\n"
-           "-------------        \n"
-           "-b        Output binary\n"
+           "------------- pipe interface ---------- \n"
+           "-b        Output binary (resid compatible) \n"
            "-i        Input from file handle (> 3) instead filename");
     return 1;
   }
@@ -298,7 +298,7 @@ int main(int argc, char **argv)
       playaddress = mem[0x314] | (mem[0x315] << 8);
     fprintf(stderr, "New play address is $%04X\n", playaddress);
   }
-  
+
   // Clear channelstructures in preparation & print first time info
   memset(&chn, 0, sizeof chn);
   memset(&filt, 0, sizeof filt);
@@ -423,6 +423,7 @@ int main(int argc, char **argv)
         irregular_frame_out_cycle = cpucycles;
       }
       // Test for hard stop
+      // Todo: don't exit if it was outputting still audio
       if (instr > MAX_INSTR)
       {
         fprintf(stderr, "Error: CPU executed abnormally high amount of instructions, exiting\n");
@@ -443,7 +444,6 @@ int main(int argc, char **argv)
       {
         printf("%06x, FRAME %04x, cycle delta:%04x, init=%d\n", instr, frames, delta_cpu_c, initializing);
       }
-
 
   }
 
