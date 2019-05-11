@@ -10,9 +10,8 @@
 #define CPU_FREQ 985248
 #define SCREEN_REFRESH 50
 
-#define CYCLE_COUNTERTER_MAX 0x1FFF
+#define CYCLE_COUNTER_MAX 0x1FFF
 #define CYCLE_OVERFLOW_MARGIN 10
-#define CYCLE_COUNTER_JITTER 1 // in future we might reduce resolution
 #define CYCLE_SCREEN_REFRESH  (CPU_FREQ / SCREEN_REFRESH)
 
 typedef struct
@@ -353,29 +352,29 @@ int main(int argc, char **argv)
     // Inner cycle data
     int instr = 0;
     int last_cpu_cycle = cpucycles = 0;
-    int irregular_frame_out_cycle = 0;
+    int bogus_frame_cycles = 0;
 
     while (runcpu())
     {
       instr++;
 
-      int delta_cpu_c = cpucycles - last_cpu_cycle;
+      int delta_cpu_cycles = cpucycles - last_cpu_cycle;
 
       // Emit NOP so that cycle counter overflow is prevented
       // "Register" 25
-      if ((delta_cpu_c - CYCLE_OVERFLOW_MARGIN) >= CYCLE_COUNTERTER_MAX)
+      if ((delta_cpu_cycles - CYCLE_OVERFLOW_MARGIN) >= CYCLE_COUNTER_MAX)
       {
         if (binary_out)
         {
-          unsigned int delta_m = (delta_cpu_c & CYCLE_COUNTERTER_MAX) << 16;
+          unsigned int delta_m = (delta_cpu_cycles & CYCLE_COUNTER_MAX) << 16;
           unsigned int out = delta_m | 25 << 8;
           write(1, &out, 4);
         }
-        else fprintf(stdout, "%06x: Cycle counter overflow prevented at delta:%04x\n", instr, delta_cpu_c);
-        fprintf(stderr, "%06x: Warning: Cycle counter overflow prevented at delta:%04x\n", instr, delta_cpu_c);
+        else fprintf(stdout, "%06x: Cycle counter overflow prevented at delta:%04x\n", instr, delta_cpu_cycles);
+        fprintf(stderr, "%06x: Warning: Cycle counter overflow prevented at delta:%04x\n", instr, delta_cpu_cycles);
 
         last_cpu_cycle = cpucycles;
-        delta_cpu_c = 0;
+        delta_cpu_cycles = 0;
       }
 
       // SID register write dumps
@@ -384,14 +383,14 @@ int main(int argc, char **argv)
       {
         unsigned char v = mem[last_mem_write];
 
-        unsigned int delta_m = ((unsigned)delta_cpu_c & CYCLE_COUNTERTER_MAX) << 16;
+        unsigned int delta_m = ((unsigned)delta_cpu_cycles & CYCLE_COUNTER_MAX) << 16;
         unsigned int out = delta_m | reg << 8 | v;
        
         if (binary_out) write(1, &out, 4);
-        else fprintf(stdout, "%06x: INSTR %04x, cycle delta:%04x\n", instr, reg << 8 | v, delta_cpu_c);
+        else fprintf(stdout, "%06x: INSTR %04x, cycle delta:%04x\n", instr, reg << 8 | v, delta_cpu_cycles);
 
         last_cpu_cycle = cpucycles;
-        delta_cpu_c = 0;
+        delta_cpu_cycles = 0;
 
         //reset mem_write so that if next instructions don't write to mem, nothing is emitted more than once
         last_mem_write = 0;
@@ -403,24 +402,24 @@ int main(int argc, char **argv)
         break;
 
       // Test for artificial frame so that FPS are maintained
-      if ((cpucycles - irregular_frame_out_cycle) >= CYCLE_SCREEN_REFRESH)
+      if ((cpucycles - bogus_frame_cycles) >= CYCLE_SCREEN_REFRESH)
       {
         // Frame out because no other suspend function
         if (binary_out)
         {
-          unsigned int delta_m = (delta_cpu_c & CYCLE_COUNTERTER_MAX) << 16;
+          unsigned int delta_m = (delta_cpu_cycles & CYCLE_COUNTER_MAX) << 16;
           unsigned int out = 1 << 31 | delta_m | (frames & 0xFFFF); //| initializing | (1 << 1);
           write(1, &out, 4);
         }
-        else fprintf(stdout, "%06x, FRAME %04x, cycle delta:%04x, init=%d [irregular]\n", instr, frames, delta_cpu_c, initializing);
+        else fprintf(stdout, "%06x, FRAME %04x, cycle delta:%04x, init=%d [irregular]\n", instr, frames, delta_cpu_cycles, initializing);
         // do not re-init cpu nor break but wait for hard stop
         frames++;
         
         if (frames >= terminalframe){
-          fprintf(stderr, "Warning: Terminal frame reached after irregular FRAME emit, exiting\n");
-          return 1;
+          fprintf(stderr, "Terminal frame reached after bogus FRAME emit, exiting\n");
+          return 0;
         }
-        irregular_frame_out_cycle = cpucycles;
+        bogus_frame_cycles = cpucycles;
       }
       // Test for hard stop
       // Todo: don't exit if it was outputting still audio
@@ -433,16 +432,16 @@ int main(int argc, char **argv)
 
   {
       // Regular Frame out (interrupt or cpu suspended)
-      int delta_cpu_c = cpucycles - last_cpu_cycle;
+      int delta_cpu_cycles = cpucycles - last_cpu_cycle;
       if (binary_out)
       {
-        unsigned int delta_m = (delta_cpu_c & CYCLE_COUNTERTER_MAX) << 16;
+        unsigned int delta_m = (delta_cpu_cycles & CYCLE_COUNTER_MAX) << 16;
         unsigned int out = 1 << 31 | delta_m | (frames & 0xFFFF); //| initializing;
         write(1, &out, 4);
       }
       else
       {
-        printf("%06x, FRAME %04x, cycle delta:%04x, init=%d\n", instr, frames, delta_cpu_c, initializing);
+        printf("%06x, FRAME %04x, cycle delta:%04x, init=%d\n", instr, frames, delta_cpu_cycles, initializing);
       }
 
   }
